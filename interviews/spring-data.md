@@ -166,3 +166,114 @@ Trong ví dụ `explicitSaveAfterUpdate`, việc lưu rõ ràng là không cần
 
 ### Kết luận
 Bọc một phương thức trong `@Transactional` là cách dễ dàng nhất để đảm bảo cơ chế “dirty checking” của Hibernate hoạt động. Khi một phương thức được bọc trong `@Transactional`, các entity được truy xuất hoặc lưu trong phương thức đó tự động trở thành một phần của Hibernate Session (hoặc JPA EntityManager) và ở trạng thái “managed” hoặc “persistent”.
+
+
+# 3. Tóm tắt về Optimistic Locking và Pessimistic Locking trong Hibernate
+
+### Optimistic Locking
+**Khái niệm**: Phương pháp này dựa trên giả định rằng xung đột dữ liệu hiếm khi xảy ra. Thay vì lock dữ liệu, nó chỉ kiểm tra khi dữ liệu thực sự được cập nhật, thường sử dụng một cột `version` trong entity.
+
+**Ví dụ với Spring Data**:
+
+```java
+@Data
+@Entity
+public class Product {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Version
+    private int version;
+
+    private String name;
+    private double price;
+}
+
+public interface ProductRepository extends JpaRepository<Product, Long> {}
+
+@Service
+public class ProductService {
+    @Autowired
+    private ProductRepository productRepository;
+
+    public void updatePrice(Long id, double newPrice) {
+        Product product = productRepository.findById(id).orElseThrow();
+        product.setPrice(newPrice);
+        productRepository.save(product);
+    }
+}
+```
+
+Trong ví dụ trên, khi hai luồng đồng thời cố gắng update giá của cùng một sản phẩm, luồng đầu tiên sẽ thành công, còn luồng thứ hai sẽ gặp lỗi `ObjectOptimisticLockingFailureException` do không khớp version.
+
+**SQL sinh ra cho phương thức `updatePrice`**:
+
+```sql
+SELECT id, name, price, version FROM product WHERE id = ?
+UPDATE product SET name = ?, price = ?, version = ? WHERE id = ? AND version = ?
+```
+
+- **Read operations** (như `findById`) không chặn (non-blocking) và có thể thực hiện song song mà không kiểm tra cột version.
+- **Write operations** (như `save`) sẽ kiểm tra cột version để đảm bảo dữ liệu chưa thay đổi từ lần read trước.
+
+Trong các trường hợp cần đảm bảo rằng dữ liệu read là mới nhất, cần sử dụng chiến lược Pessimistic Locking.
+
+---
+
+### Pessimistic Locking
+**Khái niệm**: Phương pháp này giả định rằng tranh chấp dữ liệu có khả năng xảy ra, vì vậy sẽ lock dữ liệu trong suốt thời gian của một transaction để ngăn chặn truy cập từ các transaction khác.
+
+**Ví dụ với Spring Data**:
+
+```java
+@Data
+@Entity
+public class Product {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+    private double price;
+}
+
+public interface ProductRepository extends JpaRepository<Product, Long> {
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<Product> findByIdLocked(Long id);
+}
+
+@Service
+public class ProductService {
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Transactional
+    public void updatePrice(Long id, double newPrice) {
+        Product product = productRepository.findByIdLocked(id)
+            .orElseThrow(EntityNotFoundException::new);
+        product.setPrice(newPrice);
+    }
+}
+```
+
+Annotation `@Lock(LockModeType.PESSIMISTIC_WRITE)` đảm bảo rằng một write lock sẽ được áp dụng khi `findByIdLocked` được gọi. Sử dụng `@Transactional` đảm bảo tính toàn vẹn của các thao tác trong transaction.
+
+**SQL sinh ra cho phương thức `updatePrice`**:
+
+```sql
+SELECT id, name, price FROM product WHERE id = ? FOR UPDATE
+UPDATE product SET name = ?, price = ? WHERE id = ?
+```
+
+- Phương pháp này ngăn chặn xung đột truy cập dữ liệu đồng thời bằng cách lock dữ liệu cho đến khi transaction hoàn tất.
+
+---
+
+### Kết luận
+Trong Spring Data JPA, có hai chiến lược locking chính:
+
+- **@Transactional + @Lock(LockModeType.PESSIMISTIC_WRITE)**: Đảm bảo tính nhất quán nghiêm ngặt và ngăn xung đột, nhưng có thể làm giảm throughput.
+- **@Version**: Sử dụng Optimistic Locking, chỉ kiểm tra version khi ghi, giúp tăng throughput khi xung đột dữ liệu ít xảy ra.
+
+Lựa chọn giữa hai phương pháp dựa trên tần suất truy cập đồng thời dự kiến và mức độ cần thiết về tính nhất quán của dữ liệu.
