@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  mysql:
+    container_name: mysql5.7
+    image: docker.io/bitnami/mysql:5.7
+    ports:
+      - '3307:3306'
+    volumes:
+      - 'mysql_data:/bitnami/mysql/data'
+    environment:
+      # ALLOW_EMPTY_PASSWORD is recommended only for development.
+      - MYSQL_ROOT_PASSWORD=pass
+      # - ALLOW_EMPTY_PASSWORD=yes
+    # healthcheck:
+    #   test: ['CMD', '/opt/bitnami/scripts/mysql/healthcheck.sh']
+    #   interval: 15s
+    #   timeout: 5s
+    #   retries: 6
+
+volumes:
+  mysql_data:
+    driver: local
